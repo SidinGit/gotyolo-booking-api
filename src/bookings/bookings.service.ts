@@ -1,9 +1,9 @@
-import { 
-  Injectable, 
-  Inject, 
-  Logger, 
-  NotFoundException, 
-  BadRequestException 
+import {
+  Injectable,
+  Inject,
+  Logger,
+  NotFoundException,
+  BadRequestException
 } from '@nestjs/common';
 import { Pool } from 'pg';
 import { CreateBookingDto } from './dto/create-booking.dto';
@@ -13,7 +13,7 @@ import { Booking } from './entities/booking.entity';
 export class BookingsService {
   private readonly logger = new Logger(BookingsService.name);
 
-  constructor(@Inject('DATABASE_POOL') private readonly pool: Pool) {}
+  constructor(@Inject('DATABASE_POOL') private readonly pool: Pool) { }
 
   // ==========================================
   // 1. CREATE BOOKING (Concurrent Safe)
@@ -65,7 +65,7 @@ export class BookingsService {
         VALUES ($1, $2, $3, 'PENDING_PAYMENT', $4, CURRENT_TIMESTAMP + INTERVAL '15 minutes')
         RETURNING *;
       `;
-      
+
       const bookingResult = await client.query(insertQuery, [
         trip.id,
         createBookingDto.user_id,
@@ -75,7 +75,7 @@ export class BookingsService {
 
       await client.query('COMMIT'); // Save everything
       this.logger.log(`Booking created successfully: ${bookingResult.rows[0].id}`);
-      
+
       return bookingResult.rows[0];
 
     } catch (error) {
@@ -92,11 +92,11 @@ export class BookingsService {
   // ==========================================
   async findOne(id: string): Promise<Booking> {
     const result = await this.pool.query('SELECT * FROM bookings WHERE id = $1', [id]);
-    
+
     if (result.rows.length === 0) {
       throw new NotFoundException(`Booking with ID ${id} not found`);
     }
-    
+
     return result.rows[0];
   }
 
@@ -114,15 +114,29 @@ export class BookingsService {
     try {
       await client.query('BEGIN');
 
-      // Lock the booking row
-      const bookingRes = await client.query(
-        'SELECT * FROM bookings WHERE id = $1 FOR UPDATE', 
+      // 1. Read: Fetch the trip_id without acquiring an exclusive lock
+      const initialReadRes = await client.query(
+        'SELECT trip_id FROM bookings WHERE id = $1',
         [payload.booking_id]
       );
 
-      if (bookingRes.rows.length === 0) {
+      if (initialReadRes.rows.length === 0) {
         throw new NotFoundException('Booking not found');
       }
+
+      const tripId = initialReadRes.rows[0].trip_id;
+
+      // 2. Lock Parent: Lock the trip row
+      await client.query(
+        'SELECT id FROM trips WHERE id = $1 FOR UPDATE',
+        [tripId]
+      );
+
+      // 3. Lock Child: Now safely lock the booking row
+      const bookingRes = await client.query(
+        'SELECT * FROM bookings WHERE id = $1 FOR UPDATE',
+        [payload.booking_id]
+      );
 
       const booking = bookingRes.rows[0];
 
@@ -132,7 +146,7 @@ export class BookingsService {
       if (booking.idempotency_key === payload.event_id || booking.state !== 'PENDING_PAYMENT') {
         await client.query('ROLLBACK');
         this.logger.warn(`Webhook ignored: Booking ${booking.id} already processed or event duplicated.`);
-        return { message: 'Webhook already processed successfully' }; 
+        return { message: 'Webhook already processed successfully' };
       }
 
       if (payload.status === 'success') {
@@ -179,45 +193,58 @@ export class BookingsService {
     try {
       await client.query('BEGIN');
 
-      // 1. Lock the booking and join with the trip to get refund policy
-      const result = await client.query(`
-        SELECT b.*, t.start_date, t.refundable_until_days_before, t.cancellation_fee_percent 
-        FROM bookings b
-        JOIN trips t ON b.trip_id = t.id
-        WHERE b.id = $1 FOR UPDATE
-      `, [id]);
+      // 1. Read: get the trip_id first without locking
+      const initialReadRes = await client.query(
+        'SELECT trip_id FROM bookings WHERE id = $1',
+        [id]
+      );
+      if (initialReadRes.rows.length === 0) throw new NotFoundException('Booking not found');
+      const tripId = initialReadRes.rows[0].trip_id;
 
-      if (result.rows.length === 0) throw new NotFoundException('Booking not found');
-      const booking = result.rows[0];
+      // 2. Lock Parent: Lock the trip row and get refund policy data
+      const tripRes = await client.query(
+        'SELECT start_date, refundable_until_days_before, cancellation_fee_percent FROM trips WHERE id = $1 FOR UPDATE',
+        [tripId]
+      );
+      const trip = tripRes.rows[0];
 
-      if (booking.state === 'CANCELLED') throw new BadRequestException('Already cancelled');
+      // 3. Lock Child: Lock the booking row and get booking data
+      const bookingRes = await client.query(
+        'SELECT * FROM bookings WHERE id = $1 FOR UPDATE',
+        [id]
+      );
+      const booking = bookingRes.rows[0];
 
-      // 2. Calculate Refund Logic
-      const startDate = new Date(booking.start_date);
+      // 4. Checking against existing state
+      if (booking.state === 'CANCELLED' || booking.state === 'EXPIRED') {
+        throw new BadRequestException('Cannot cancel an already cancelled or expired booking');
+      }
+
+      // 5. Calculate Refund Logic
+      const startDate = new Date(trip.start_date);
       const now = new Date();
       const diffTime = startDate.getTime() - now.getTime();
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
       let refundAmount = 0;
-      if (booking.state === 'CONFIRMED') {
-        if (diffDays >= booking.refundable_until_days_before) {
-          // Full refund minus fee percentage
-          const fee = parseFloat(booking.price_at_booking) * (parseFloat(booking.cancellation_fee_percent) / 100);
+
+      // Before Cutoff Math, refundAmount changes in this block
+      if (diffDays >= trip.refundable_until_days_before) {
+        if (booking.state === 'CONFIRMED' || booking.state === 'PENDING_PAYMENT') {
+          // Full price at booking minus the cancellation fee percentage
+          const fee = parseFloat(booking.price_at_booking) * (parseFloat(trip.cancellation_fee_percent) / 100);
           refundAmount = parseFloat(booking.price_at_booking) - fee;
-        } else {
-          // Too late for refund
-          refundAmount = 0;
         }
       }
 
-      // 3. Update Booking State
+      // 6. Update Booking State
       const updatedBooking = await client.query(`
         UPDATE bookings 
         SET state = 'CANCELLED', cancelled_at = CURRENT_TIMESTAMP, refund_amount = $1
         WHERE id = $2 RETURNING *
       `, [refundAmount, id]);
 
-      // 4. Return the seats to the trip
+      // 7. Return the seats to the trip
       await client.query(
         'UPDATE trips SET available_seats = available_seats + $1 WHERE id = $2',
         [booking.num_seats, booking.trip_id]

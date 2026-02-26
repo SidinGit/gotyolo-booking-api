@@ -9,7 +9,7 @@ import { GetTripsFilterDto } from './dto/get-trips-filter.dto';
 export class TripsService {
   private readonly logger = new Logger(TripsService.name);
 
-  constructor(@Inject('DATABASE_POOL') private readonly pool: Pool) {}
+  constructor(@Inject('DATABASE_POOL') private readonly pool: Pool) { }
 
   /* ------ Public Methods ------ */
   async findAll(filters: GetTripsFilterDto): Promise<Trip[]> {
@@ -85,7 +85,7 @@ export class TripsService {
 
       const newTripRecord = `
       INSERT INTO trips (
-      title, destination, start_date, end_date, price, 
+          title, destination, start_date, end_date, price, 
           max_capacity, available_seats, status, 
           refundable_until_days_before, cancellation_fee_percent
       )
@@ -115,7 +115,7 @@ export class TripsService {
     }
   }
 
-  async getAtRiskTrips(): Promise<any[]> {
+  async getAtRiskTrips(): Promise<{ at_risk_trips: any[] }> {
     try {
       const query = `
         SELECT 
@@ -137,7 +137,18 @@ export class TripsService {
       `;
 
       const result = await this.pool.query(query);
-      return result.rows;
+
+      const mappedTrips = result.rows.map(row => ({
+        trip_id: row.id,
+        title: row.title,
+        departure_date: row.start_date,
+        occupancy_percent: parseFloat(row.occupancy_percentage),
+        reason: "Low occupancy with imminent departure"
+      }));
+
+      return {
+        at_risk_trips: mappedTrips
+      };
     } catch (error) {
       this.logger.error('Failed to fetch at-risk trips', error.stack);
       throw error;
@@ -146,30 +157,57 @@ export class TripsService {
 
   async getTripMetrics(id: string): Promise<any> {
     try {
-      // First, verify the trip exists
-      await this.findOne(id);
+      // First, verify the trip exists (This also gives us the base trip data)
+      const trip = await this.findOne(id);
 
       const query = `
         SELECT 
-          COUNT(id) as total_bookings,
-          -- Sum seats only for confirmed bookings
-          COALESCE(SUM(CASE WHEN state = 'CONFIRMED' THEN num_seats ELSE 0 END), 0)::int as total_seats_sold,
-          -- Sum revenue only for confirmed bookings
-          COALESCE(SUM(CASE WHEN state = 'CONFIRMED' THEN price_at_booking ELSE 0 END), 0) as total_revenue,
-          -- Count how many bookings were cancelled
-          COALESCE(SUM(CASE WHEN state = 'CANCELLED' THEN 1 ELSE 0 END), 0)::int as cancellations,
-          -- Total money refunded
-          COALESCE(SUM(refund_amount), 0) as total_refunded
+          -- Aggregate booking states
+          COALESCE(SUM(CASE WHEN state = 'CONFIRMED' THEN 1 ELSE 0 END), 0)::int as confirmed_count,
+          COALESCE(SUM(CASE WHEN state = 'PENDING_PAYMENT' THEN 1 ELSE 0 END), 0)::int as pending_count,
+          COALESCE(SUM(CASE WHEN state = 'CANCELLED' THEN 1 ELSE 0 END), 0)::int as cancelled_count,
+          COALESCE(SUM(CASE WHEN state = 'EXPIRED' THEN 1 ELSE 0 END), 0)::int as expired_count,
+          
+          -- Aggregate financials and seats
+          COALESCE(SUM(CASE WHEN state = 'CONFIRMED' THEN num_seats ELSE 0 END), 0)::int as booked_seats,
+          COALESCE(SUM(CASE WHEN state = 'CONFIRMED' THEN price_at_booking ELSE 0 END), 0) as gross_revenue,
+          COALESCE(SUM(refund_amount), 0) as refunds_issued
         FROM bookings
         WHERE trip_id = $1;
       `;
 
       const result = await this.pool.query(query, [id]);
+      const metrics = result.rows[0];
 
-      // We return the aggregated metrics alongside the trip ID
+      // Format financial math
+      const grossRevenue = parseFloat(metrics.gross_revenue);
+      const refundsIssued = parseFloat(metrics.refunds_issued);
+      const netRevenue = grossRevenue - refundsIssued;
+
+      // Format occupancy
+      const totalSeats = parseInt(trip.max_capacity as any, 10);
+      const bookedSeats = parseInt(metrics.booked_seats, 10);
+      const occupancyPercent = totalSeats > 0 ? (bookedSeats / totalSeats) * 100 : 0;
+
+      // Build exact response shape
       return {
         trip_id: id,
-        metrics: result.rows[0],
+        title: trip.title,
+        occupancy_percent: parseFloat(occupancyPercent.toFixed(2)),
+        total_seats: totalSeats,
+        booked_seats: bookedSeats,
+        available_seats: parseInt(trip.available_seats as any, 10),
+        booking_summary: {
+          confirmed: metrics.confirmed_count,
+          pending_payment: metrics.pending_count,
+          cancelled: metrics.cancelled_count,
+          expired: metrics.expired_count,
+        },
+        financial: {
+          gross_revenue: grossRevenue,
+          refunds_issued: refundsIssued,
+          net_revenue: netRevenue,
+        }
       };
     } catch (error) {
       this.logger.error(`Failed to fetch metrics for trip ${id}`, error.stack);
