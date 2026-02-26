@@ -2,6 +2,7 @@ import { Global, Module, OnModuleInit, Logger, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { SORTED_SCHEMAS } from './schema-registry';
+import { SeedService } from './seed.service';
 
 @Global()
 @Module({
@@ -13,13 +14,17 @@ import { SORTED_SCHEMAS } from './schema-registry';
         connectionString: configService.get<string>('DATABASE_URL'),
       }),
     },
+    SeedService,
   ],
   exports: ['DATABASE_POOL'],
 })
 export class DatabaseModule implements OnModuleInit {
   private readonly logger = new Logger(DatabaseModule.name);
 
-  constructor(@Inject('DATABASE_POOL') private readonly pool: Pool) {}
+  constructor(
+    @Inject('DATABASE_POOL') private readonly pool: Pool,
+    private readonly seedService: SeedService // Inject the seed service here
+  ) {}
 
   async onModuleInit() {
     this.logger.log('Executing agnostic database synchronization...');
@@ -35,5 +40,8 @@ export class DatabaseModule implements OnModuleInit {
       }
     }
     this.logger.log('Database synchronization complete.');
+
+    // Call the seeder strictly AFTER the tables are built
+    await this.seedService.seedTrips();
   }
 }

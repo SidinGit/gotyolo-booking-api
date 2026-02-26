@@ -1,34 +1,31 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Param } from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiOkResponse,
+  ApiParam,
+} from '@nestjs/swagger';
 import { TripsService } from './trips.service';
-import { CreateTripDto } from './dto/create-trip.dto';
-import { UpdateTripDto } from './dto/update-trip.dto';
+import { Trip } from './entities/trip.entity';
 
+@ApiTags('trips')
 @Controller('trips')
 export class TripsController {
   constructor(private readonly tripsService: TripsService) {}
 
-  @Post()
-  create(@Body() createTripDto: CreateTripDto) {
-    return this.tripsService.create(createTripDto);
-  }
-
+  // List all published trips
   @Get()
-  findAll() {
+  @ApiOperation({ summary: 'Get all published trips' })
+  @ApiOkResponse({ description: 'Array of trips', type: Trip, isArray: true })
+  async findAll(): Promise<Trip[]> {
     return this.tripsService.findAll();
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.tripsService.findOne(+id);
-  }
-
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateTripDto: UpdateTripDto) {
-    return this.tripsService.update(+id, updateTripDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.tripsService.remove(+id);
+  @ApiOperation({ summary: 'Get a single trip by ID' })
+  @ApiParam({ name: 'id', description: 'Trip identifier', type: String })
+  @ApiOkResponse({ description: 'Trip object', type: Trip })
+  async findOne(@Param('id') id: string): Promise<Trip> {
+    return this.tripsService.findOne(id);
   }
 }

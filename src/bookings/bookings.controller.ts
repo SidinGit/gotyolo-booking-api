@@ -1,34 +1,33 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { BookingsService } from './bookings.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
-import { UpdateBookingDto } from './dto/update-booking.dto';
 
+@ApiTags('Bookings')
 @Controller('bookings')
 export class BookingsController {
   constructor(private readonly bookingsService: BookingsService) {}
 
   @Post()
-  create(@Body() createBookingDto: CreateBookingDto) {
+  @ApiOperation({ summary: 'Reserve seats and initiate a booking' })
+  @ApiResponse({
+    status: 201,
+    description: 'Booking created with PENDING_PAYMENT state.',
+  })
+  @ApiResponse({ status: 400, description: 'Not enough available seats.' })
+  async create(@Body() createBookingDto: CreateBookingDto) {
     return this.bookingsService.create(createBookingDto);
   }
 
-  @Get()
-  findAll() {
-    return this.bookingsService.findAll();
+  @Post('webhook')
+  @ApiOperation({ summary: 'Handle payment provider webhooks (Idempotent)' })
+  async handleWebhook(@Body() payload: any) {
+    return this.bookingsService.handlePaymentWebhook(payload);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.bookingsService.findOne(+id);
-  }
-
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateBookingDto: UpdateBookingDto) {
-    return this.bookingsService.update(+id, updateBookingDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.bookingsService.remove(+id);
+  @ApiOperation({ summary: 'Check booking status' })
+  async findOne(@Param('id') id: string) {
+    return this.bookingsService.findOne(id);
   }
 }
