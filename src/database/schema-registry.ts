@@ -1,12 +1,10 @@
 import { DatabaseSchema } from './interfaces/schema.interface';
 import { TRIPS_SCHEMA } from '../trips/entities/trip.schema';
 import { BOOKINGS_SCHEMA } from '../bookings/entities/booking.schema';
-import { WEBHOOKS_SCHEMA } from '../payments/entities/webhook.schema';
 
 const ALL_SCHEMAS: DatabaseSchema[] = [
   BOOKINGS_SCHEMA,
   TRIPS_SCHEMA,
-  WEBHOOKS_SCHEMA,
 ];
 
 function sortSchemas(schemas: DatabaseSchema[]): DatabaseSchema[] {

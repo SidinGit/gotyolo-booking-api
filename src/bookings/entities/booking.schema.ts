@@ -12,13 +12,18 @@ export const BOOKINGS_SCHEMA: DatabaseSchema = {
   `,
   table: `
     CREATE TABLE IF NOT EXISTS bookings (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        trip_id UUID NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+        id UUID PRIMARY KEY DEFAULT uuidv7(),
+        trip_id UUID REFERENCES trips(id) ON DELETE RESTRICT,
+        user_id UUID NOT NULL,
         num_seats INTEGER NOT NULL,
-        total_price DECIMAL(10, 2) NOT NULL,
-        status booking_status_enum DEFAULT 'PENDING_PAYMENT',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        state VARCHAR(50) DEFAULT 'PENDING_PAYMENT',
+        price_at_booking DECIMAL(10, 2) NOT NULL,
+        payment_reference VARCHAR(255),
+        idempotency_key VARCHAR(255) UNIQUE,
+        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        cancelled_at TIMESTAMP WITH TIME ZONE,
+        refund_amount DECIMAL(10, 2),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
   `,
 };
