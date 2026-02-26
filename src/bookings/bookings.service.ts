@@ -169,4 +169,67 @@ export class BookingsService {
       client.release();
     }
   }
+
+  // ==========================================
+  // 4. CANCEL BOOKING
+  // ==========================================
+
+  async cancel(id: string): Promise<Booking> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // 1. Lock the booking and join with the trip to get refund policy
+      const result = await client.query(`
+        SELECT b.*, t.start_date, t.refundable_until_days_before, t.cancellation_fee_percent 
+        FROM bookings b
+        JOIN trips t ON b.trip_id = t.id
+        WHERE b.id = $1 FOR UPDATE
+      `, [id]);
+
+      if (result.rows.length === 0) throw new NotFoundException('Booking not found');
+      const booking = result.rows[0];
+
+      if (booking.state === 'CANCELLED') throw new BadRequestException('Already cancelled');
+
+      // 2. Calculate Refund Logic
+      const startDate = new Date(booking.start_date);
+      const now = new Date();
+      const diffTime = startDate.getTime() - now.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+      let refundAmount = 0;
+      if (booking.state === 'CONFIRMED') {
+        if (diffDays >= booking.refundable_until_days_before) {
+          // Full refund minus fee percentage
+          const fee = parseFloat(booking.price_at_booking) * (parseFloat(booking.cancellation_fee_percent) / 100);
+          refundAmount = parseFloat(booking.price_at_booking) - fee;
+        } else {
+          // Too late for refund
+          refundAmount = 0;
+        }
+      }
+
+      // 3. Update Booking State
+      const updatedBooking = await client.query(`
+        UPDATE bookings 
+        SET state = 'CANCELLED', cancelled_at = CURRENT_TIMESTAMP, refund_amount = $1
+        WHERE id = $2 RETURNING *
+      `, [refundAmount, id]);
+
+      // 4. Return the seats to the trip
+      await client.query(
+        'UPDATE trips SET available_seats = available_seats + $1 WHERE id = $2',
+        [booking.num_seats, booking.trip_id]
+      );
+
+      await client.query('COMMIT');
+      return updatedBooking.rows[0];
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
 }

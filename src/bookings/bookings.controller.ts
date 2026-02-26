@@ -30,4 +30,10 @@ export class BookingsController {
   async findOne(@Param('id') id: string) {
     return this.bookingsService.findOne(id);
   }
+
+  @Post(':id/cancel')
+  @ApiOperation({ summary: 'User cancels a booking and calculates refund' })
+  async cancel(@Param('id') id: string) {
+    return this.bookingsService.cancel(id);
+  }
 }

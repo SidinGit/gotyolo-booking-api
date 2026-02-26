@@ -1,4 +1,4 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
@@ -7,6 +7,7 @@ import {
 } from '@nestjs/swagger';
 import { TripsService } from './trips.service';
 import { Trip } from './entities/trip.entity';
+import { GetTripsFilterDto } from './dto/get-trips-filter.dto';
 
 @ApiTags('trips')
 @Controller('trips')
@@ -17,8 +18,9 @@ export class TripsController {
   @Get()
   @ApiOperation({ summary: 'Get all published trips' })
   @ApiOkResponse({ description: 'Array of trips', type: Trip, isArray: true })
-  async findAll(): Promise<Trip[]> {
-    return this.tripsService.findAll();
+  async findAll(@Query() filters: GetTripsFilterDto): Promise<Trip[]> {
+    // Pass the entire DTO to the service
+    return this.tripsService.findAll(filters);
   }
 
   @Get(':id')

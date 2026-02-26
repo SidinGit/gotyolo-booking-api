@@ -3,6 +3,7 @@ import { CreateTripDto } from './dto/create-trip.dto';
 import { UpdateTripDto } from './dto/update-trip.dto';
 import { Pool } from 'pg';
 import { Trip } from './entities/trip.entity';
+import { GetTripsFilterDto } from './dto/get-trips-filter.dto';
 
 @Injectable()
 export class TripsService {
@@ -11,12 +12,43 @@ export class TripsService {
   constructor(@Inject('DATABASE_POOL') private readonly pool: Pool) {}
 
   /* ------ Public Methods ------ */
-  async findAll(): Promise<Trip[]> {
+  async findAll(filters: GetTripsFilterDto): Promise<Trip[]> {
     try {
-      const allPublishedTrips = `SELECT * FROM trips WHERE status = 'PUBLISHED' ORDER BY created_at DESC`;
+      const { destination, start_date, end_date, max_price } = filters;
 
-      const result = await this.pool.query<Trip>(allPublishedTrips);
+      // Start with the base query
+      let query = "SELECT * FROM trips WHERE status = 'PUBLISHED'";
+      const values: any[] = [];
+      let paramIndex = 1; // Used to track $1, $2, $3 etc. dynamically
 
+      // Dynamically append conditions and parameters
+      if (destination) {
+        query += ` AND destination ILIKE $${paramIndex}`;
+        values.push(`%${destination}%`);
+        paramIndex++;
+      }
+
+      if (start_date) {
+        query += ` AND start_date >= $${paramIndex}`;
+        values.push(start_date);
+        paramIndex++;
+      }
+
+      if (end_date) {
+        query += ` AND end_date <= $${paramIndex}`;
+        values.push(end_date);
+        paramIndex++;
+      }
+
+      if (max_price) {
+        query += ` AND price <= $${paramIndex}`;
+        values.push(max_price);
+        paramIndex++;
+      }
+
+      query += ' ORDER BY start_date ASC'; // Usually better to sort by upcoming trips rather than created_at
+
+      const result = await this.pool.query<Trip>(query, values);
       return result.rows;
     } catch (error) {
       this.logger.error('Failed to fetch trips', error.stack);
