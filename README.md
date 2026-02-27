@@ -83,8 +83,9 @@ During the engineering audit, several critical flaws were identified in the orig
 
 This application provides a fully interactive **Swagger UI** generated automatically via `@nestjs/swagger`. 
 
-Once the application is running locally, you can explore, test, and view all endpoint schemas at:
-👉 **[http://localhost:3000/api/docs](http://localhost:3000/api/docs)**
+Once the application is running locally, you can explore, test, and view all endpoint schemas:
+*   **UI:** **[http://localhost:3000/api/docs](http://localhost:3000/api/docs)**
+*   **JSON:** **[http://localhost:3000/api/docs-json](http://localhost:3000/api/docs-json)**
 
 ### Core Endpoints Overview
 
