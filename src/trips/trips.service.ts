@@ -170,7 +170,7 @@ export class TripsService {
           
           -- Aggregate financials and seats
           COALESCE(SUM(CASE WHEN state = 'CONFIRMED' THEN num_seats ELSE 0 END), 0)::int as booked_seats,
-          COALESCE(SUM(CASE WHEN state = 'CONFIRMED' THEN price_at_booking ELSE 0 END), 0) as gross_revenue,
+          COALESCE(SUM(CASE WHEN state IN ('CONFIRMED', 'CANCELLED') THEN price_at_booking ELSE 0 END), 0) as gross_revenue,
           COALESCE(SUM(refund_amount), 0) as refunds_issued
         FROM bookings
         WHERE trip_id = $1;

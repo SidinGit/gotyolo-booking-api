@@ -1,12 +1,13 @@
-import { Controller, Post, Body, Get, Param } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, HttpCode } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { BookingsService } from './bookings.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { WebhookPayloadDto } from './dto/webhook-payload.dto';
 
 @ApiTags('Bookings')
 @Controller('bookings')
 export class BookingsController {
-  constructor(private readonly bookingsService: BookingsService) {}
+  constructor(private readonly bookingsService: BookingsService) { }
 
   @Post()
   @ApiOperation({ summary: 'Reserve seats and initiate a booking' })
@@ -20,8 +21,9 @@ export class BookingsController {
   }
 
   @Post('webhook')
+  @HttpCode(200) // Webhooks expect 200 OK
   @ApiOperation({ summary: 'Handle payment provider webhooks (Idempotent)' })
-  async handleWebhook(@Body() payload: any) {
+  async handleWebhook(@Body() payload: WebhookPayloadDto) {
     return this.bookingsService.handlePaymentWebhook(payload);
   }
 

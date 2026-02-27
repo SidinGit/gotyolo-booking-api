@@ -1,7 +1,7 @@
 # GoTyolo Booking System: Engineering Proposal
 
 ## 1. Booking Lifecycle & State Transitions
-The platform manages bookings via a deterministic state machine to ensure consistent revenue logic and seat availability.
+The core of this API is built around a pretty strict state machine for bookings. This is how we make sure money logic and seat counts always stay perfectly in sync.
 
 **State Machine Diagram:**
 ```mermaid
@@ -21,46 +21,48 @@ stateDiagram-v2
 ```
 
 ## 2. Concurrency & Overbooking Strategy
-To prevent overselling the `max_capacity` of a trip, this system implements pessimistic concurrency control at the database level. 
+To make absolutely sure we never oversell a trip (even if 100 people click "Book" at the exact same millisecond), I went with pessimistic concurrency control right at the database layer.
 
 **Database Transactions & Lock Sequencing:**
-Deadlocks commonly occur in relational databases when two concurrent processes attempt to acquire locks on the same resources in a different order (e.g., Transaction A locks `trips` then `bookings`, while Transaction B locks `bookings` then `trips`).
+One of the biggest headaches in distributed systems is deadlocks—usually caused when two different background jobs grab locks in different orders (like Job A locking `trips` then `bookings`, but Job B locking `bookings` then `trips`).
 
-To guarantee deadlock-free concurrency across all endpoints (Booking, Cancellations, Webhooks, and Expiry), this API adheres strictly to a **Parent-First** lock acquisition sequence:
-1.  **Read Child:** If the transaction payload only contains a `booking_id`, the system performs a standard `SELECT` (which does not block) to discover the associated `trip_id`.
-2.  **Lock Parent:** Execute `SELECT ... FROM trips WHERE id = $1 FOR UPDATE`. This ensures only one process across the entire cluster can modify this trip's seat availability at any time.
-3.  **Lock Child:** Execute `SELECT ... FROM bookings WHERE id = $1 FOR UPDATE`.
-4.  **Execute Logic:** Perform calculations, insert/update operations.
-5.  **Commit/Rollback:** The lock is automatically released.
+To avoid that entirely, every single critical action (booking, cancelling, webhooks) strictly follows a "Parent-First" locking order:
+1.  **Read Child First (No Lock):** If we only have a `booking_id`, we do a quick regular `SELECT` to find the `trip_id`.
+2.  **Lock the Parent:** We hit the DB with `SELECT ... FROM trips WHERE id = $1 FOR UPDATE`. This grabs an exclusive row lock on the trip, meaning no other process anywhere can touch this trip's seat count until we are done.
+3.  **Lock the Child:** Then we do `SELECT ... FROM bookings WHERE id = $1 FOR UPDATE`.
+4.  **Do the Math:** Check constraints, calculate refunds, update rows.
+5.  **Commit:** Everything saves, and Postgres automatically releases our locks.
 
 ## 3. High Traffic Scenario & Resilience
-**Scenario:** A highly anticipated trip receives 500 booking requests within 5 seconds for the final 2 remaining seats.
+**Scenario:** A trip is super popular, and 500 people try to book the last 2 seats within 5 seconds.
 
-**System Behavior under load:**
-1.  **Row-Level Locking (`FOR UPDATE`):** The first request logically arrives at the database and locks the specific `trip` row. The remaining 499 requests will block at the query level, waiting for the lock to be released.
-2.  **Validation:** The first two transactions will acquire the lock sequentially, observe that seats are `> 0`, deduct their seats, commit, and succeed.
-3.  **Conflict Rejection:** The 3rd through 500th transactions will eventually acquire the lock, but upon checking the business constraint (`trip.available_seats < num_seats`), they will trigger an immediate rollback and return a `409 Conflict` to the user gracefully.
+**What happens under the hood:**
+1.  **The Traffic Jam:** The very first request reaches the database and locks the trip row with `FOR UPDATE`. The other 499 requests don't crash or fail immediately; they actually just pause and form a queue waiting for that row lock to free up.
+2.  **The Winners:** The first two transactions get their turn, see that `available_seats > 0`, deduct their seats, commit, and send a success response.
+3.  **The Losers:** The 3rd through 500th transactions eventually get the lock, but when they check our business logic (`trip.available_seats < num_seats`), it fails. The transaction rolls back cleanly, and we return a `409 Conflict` to those users letting them know they missed out.
 
-**Safeguards implemented:**
-*   **Database connection pooling (`pg.Pool`):** Prevents maxing out PostgreSQL connections during the spike.
-*   **No Application-Level Race Conditions:** By relying purely on ACID transactions, we rely on the database's native guarantee of serializability instead of trusting Node.js's event loop. 
+**Safeguards I put in place:**
+*   **Connection Pooling (`pg.Pool`):** This stops the app from opening 500 simultaneous connections to Postgres and crashing the database.
+*   **Pessimistic Row Level Locking:** Node.js event loops are great, but for money and inventory, throwing actual database constraints and row-locks at the problem is the only way to sleep well at night.
 
 ## 4. Webhook Idempotency
-Payment network glitches can result in the same "Success" webhook being fired multiple times. 
-The system relies on an architectural combination of:
-*   A `UNIQUE` constraint in the database for the `idempotency_key` column (where feasible).
-*   A logical guard inside the `FOR UPDATE` transaction block that checks if `booking.state !== 'PENDING_PAYMENT'` or if the event ID matches the previously recorded `idempotency_key`. If true, the system skips all DB writes and returns an HTTP `200 OK` to satisfy the payment gateway.
+Payment providers like Stripe are awesome, but networks aren't perfect. They might accidentally send us the same "Payment Success" webhook twice.
+
+To handle this gracefully:
+*   We check the database to see if `booking.state !== 'PENDING_PAYMENT'`, or if the webhook's `idempotency_key` matches the one we already saved.
+*   If we've already processed it, we just roll back the current transaction and send back a `200 OK`. It's super important we send a 200, otherwise the payment provider will think our server is broken and keep retrying the webhook for days.
 
 ## 5. Booking Auto-Expiry
-**Mechanism:** Background Task Scheduler (NestJS `@nestjs/schedule` Cron Job).
-**Frequency:** Every 1 minute.
-**Strategy:**
-A recurring background worker executes a continuous sweep for stale `PENDING_PAYMENT` records where `expires_at <= CURRENT_TIMESTAMP`.
-To prevent scaling issues (e.g., if we run 3 instances of the backend API, we don't want 3 cron jobs fighting over the same expired bookings), the query utilizes PostgreSQL's `FOR UPDATE SKIP LOCKED`. 
-This guarantees that if Worker A is currently modifying an expired row to return its seats to the trip, Worker B will skip that row entirely and move to the next expired booking, maximizing throughput without distributed lock management (like Redis implementation).
+**Mechanism:** A background Cron Job using NestJS `@nestjs/schedule`.
+**Frequency:** Runs every 60 seconds.
+
+**How it works:**
+Every minute, the worker sweeps the database looking for `PENDING_PAYMENT` bookings that have crossed their `expires_at` timestamp.
+It fires off a single aggressive SQL query using `UPDATE ... RETURNING` to flip them all to `EXPIRED` at once. This avoids pulling every record into Node.js memory just to check its state. The database gives us back the exact IDs and seat counts of the newly expired bookings, allowing us to safely loop through and restore the `available_seats` in the `trips` table.
 
 ## 6. Design Justification: Denormalized Seats
-The `Trip` table maintains `available_seats` as a direct integer column, rather than calculating it dynamically at read-time (e.g., `max_capacity - SUM(bookings.num_seats)`).
-**Why Denormalize?**
-*   **Read Performance:** The core user behavior is viewing a catalog of trips. Having readily available seat counts prevents an expensive aggregate `JOIN` scan on the bookings table for every user hitting the discovery view.
-*   **Write Performance & Concurrency Risk:** Enforcing the "never overbook" rule requires checking remaining seats. A dynamic summation in a high-concurrency environment would require locking the entire table or executing complex serialization isolation levels. By denormalizing, we can apply a simple `SELECT ... FOR UPDATE` directly on the specific trip row, achieving maximum concurrency isolation.
+You'll notice the `Trip` table has an actual `available_seats` integer column, rather than making us calculate it on the fly by summing up all the confirmed bookings (`max_capacity - SUM(num_seats)`).
+
+**Why I denormalized it:**
+*   **Extremely Fast Reads:** The most common action users take is scrolling through the catalog. If we had to dynamically calculate the sum of bookings for every trip on a dashboard, the database would crawl to a halt under load.
+*   **Easier Concurrency:** To enforce the rules, we have to know exactly how many seats are left. By storing it as a hard number on the trip row, we can just grab an exclusive lock on that single trip row and do our validations instantly. Having to lock multiple joined tables just to figure out capacity introduces massive deadlock risks.

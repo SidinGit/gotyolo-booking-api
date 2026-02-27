@@ -73,6 +73,9 @@ During the engineering audit, several critical flaws were identified in the orig
 4.  **Admin Payload Mismatches:**
     *   *Issue:* `getAtRiskTrips` and `getTripMetrics` returned flat SQL rows that did not match the strictly requested hierarchical JSON schemas.
     *   *Fix:* Implemented Application-layer mapping in TypeScript and database-layer aggregations (`COALESCE(SUM(CASE...))`) to format the metrics exactly to spec.
+5.  **Missing Auto-Expiry Job:**
+    *   *Issue:* Bookings in the `PENDING_PAYMENT` state were never expired after their 15-minute TTL, meaning abandoned checkouts permanently locked seats.
+    *   *Fix:* Implemented a background Cron Job using `@nestjs/schedule` that runs every minute to batch update expired bookings and safely return their seats to the trip capacity.
 
 ---
 
@@ -87,56 +90,56 @@ Once the application is running locally, you can explore, test, and view all end
 
 **1. List Published Trips**
 ```http
-GET /trips
+GET /api/v1/trips
 ```
 *   *Query Params:* `destination`, `start_date`, `end_date`, `max_price`
 
 **2. Get Trip Details**
 ```http
-GET /trips/:id
+GET /api/v1/trips/:id
 ```
 
 **3. Create Booking**
 ```http
-POST /bookings
+POST /api/v1/bookings
 ```
 *   *Body:* `{ "trip_id": "uuid", "user_id": "uuid", "num_seats": 2 }`
 *   *Response:* Returns Booking object in `PENDING_PAYMENT` state.
 
 **4. Payment Webhook**
 ```http
-POST /bookings/webhook
+POST /api/v1/bookings/webhook
 ```
-*   *Body:* `{ "event_id": "...", "booking_id": "...", "status": "success|failed" }`
+*   *Body:* `{ "idempotency_key": "...", "booking_id": "...", "status": "success|failed" }`
 *   *Note:* Idempotent. Safe to retry.
 
 **5. Cancel Booking**
 ```http
-POST /bookings/:id/cancel
+POST /api/v1/bookings/:id/cancel
 ```
 *   *Response:* Returns cancelled booking with calculated `refund_amount`.
 
 **6. Get Booking Details**
 ```http
-GET /bookings/:id
+GET /api/v1/bookings/:id
 ```
 
 ### Admin Endpoints
 
 **1. Create Trip**
 ```http
-POST /admin/trips
+POST /api/v1/admin/trips
 ```
 *   *Body:* Trip details (`title`, `price`, `max_capacity`, etc.)
 
 **2. Trip Metrics**
 ```http
-GET /admin/trips/:id/metrics
+GET /api/v1/admin/trips/:id/metrics
 ```
 *   *Response:* Deeply nested JSON containing occupancy percentage, revenue sums, and state counts.
 
 **3. At-Risk Trips**
 ```http
-GET /admin/trips/at-risk
+GET /api/v1/admin/trips/at-risk
 ```
 *   *Response:* Lists trips departing in < 7 days with < 50% occupancy.

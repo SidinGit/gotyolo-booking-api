@@ -142,14 +142,22 @@ export class BookingsService {
 
       const booking = bookingRes.rows[0];
 
+      if (booking.state !== 'PENDING_PAYMENT') {
+        // It's expired, already cancelled, etc.
+        await client.query('ROLLBACK');
+        this.logger.warn(`Webhook ignored: Booking in ${booking.state} state.`);
+        return { message: 'Webhook ignored due to invalid state' };
+      }
+
       // IDEMPOTENCY CHECK: 
-      // If Stripe network glitches and sends the exact same success webhook twice,
       // we detect it here and safely ignore the second one without throwing an error.
-      if (booking.idempotency_key === payload.idempotency_key || booking.state !== 'PENDING_PAYMENT') {
+      if (booking.idempotency_key === payload.idempotency_key) {
         await client.query('ROLLBACK');
         this.logger.warn(`Webhook ignored: Booking ${booking.id} already processed or event duplicated.`);
         return { message: 'Webhook already processed successfully' };
       }
+
+      
 
       if (payload.status === 'success') {
         // Payment Success -> Confirm Booking
